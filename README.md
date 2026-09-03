@@ -69,6 +69,8 @@ print(f"Training Readiness Score: {readiness[0].score}/100")
 # Get sleep data for specific date
 sleep_data = api_client.metrics.get('sleep').get('2023-12-01')
 print(f"Sleep Score: {sleep_data[0].overall_sleep_score}")
+# Naps are reported separately from the main sleep window
+print(f"Naps: {sleep_data[0].nap_count}, total with naps: {sleep_data[0].total_sleep_with_naps_hours:.1f} h")
 ```
 
 ### Local Database & CLI Tools
@@ -173,7 +175,7 @@ Garmy provides access to a comprehensive set of Garmin Connect metrics:
 
 | Metric | Description | Example Usage |
 |--------|-------------|---------------|
-| `sleep` | Sleep tracking data including stages and scores | `api_client.metrics.get('sleep').get()` |
+| `sleep` | Sleep tracking data including stages, scores, and naps | `api_client.metrics.get('sleep').get()` |
 | `heart_rate` | Daily heart rate statistics | `api_client.metrics.get('heart_rate').get()` |
 | `stress` | Stress level measurements | `api_client.metrics.get('stress').get()` |
 | `steps` | Daily step counts and goals | `api_client.metrics.get('steps').list(days=7)` |

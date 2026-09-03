@@ -93,6 +93,7 @@ class TestMetricsPackageInit:
             "Respiration",
             "RestingHeartRate",
             "Sleep",
+            "SleepNap",
             "SpO2",
             "Steps",
             "Stress",
@@ -497,8 +498,8 @@ class TestSleep:
                 "id": 123456,
                 "userProfilePk": 12345,
                 "calendarDate": "2023-12-01",
-                "sleepTimeSeconds": 28800,  # 8 hours
-                "napTimeSeconds": 0,
+                "sleepTimeSeconds": 28800,  # 8 hours (excludes naps)
+                "napTimeSeconds": 2700,  # 45 min across the two naps below
                 "sleepStartTimestampGmt": 1701385200000,
                 "sleepEndTimestampGmt": 1701414000000,
                 "sleepStartTimestampLocal": 1701385200000,
@@ -523,6 +524,38 @@ class TestSleep:
                 "avgSleepStress": 15.2,
                 "sleepScores": {"overall": 85, "quality": 90},
                 "sleepNeed": {"baselineSleepNeed": 480},
+                # Real API casing; only present on days with naps
+                "dailyNapDTOS": [
+                    {
+                        "userProfilePK": 12345,
+                        "deviceId": 987654321,
+                        "calendarDate": "2023-12-01",
+                        "napTimeSec": 1800,
+                        "napStartTimestampGMT": "2023-12-01T20:00:00",
+                        "napEndTimestampGMT": "2023-12-01T20:30:00",
+                        "napFeedback": "IDEAL_TIMING_IDEAL_DURATION_LOW_NEED",
+                        "napSource": 0,
+                        "napStartTimeOffset": -28800,
+                        "napEndTimeOffset": -28800,
+                        "createTimestampGMT": None,
+                        "updateTimestampGMT": None,
+                    },
+                    {
+                        "userProfilePK": 12345,
+                        "deviceId": 987654321,
+                        "calendarDate": "2023-12-01",
+                        "napTimeSec": 900,
+                        "napStartTimestampGMT": "2023-12-01T23:00:00",
+                        "napEndTimestampGMT": "2023-12-01T23:15:00",
+                        "napFeedback": "MULTIPLE_NAPS_DURING_DAY",
+                        "napSource": 0,
+                        "napStartTimeOffset": -28800,
+                        "napEndTimeOffset": -28800,
+                        "createTimestampGMT": None,
+                        "updateTimestampGMT": None,
+                        "someFutureKey": "ignored",
+                    },
+                ],
             },
             "sleepMovement": [
                 {"startGMT": 1701385200000, "activityLevel": 0.1},
@@ -703,6 +736,101 @@ class TestSleep:
             result = parse_sleep_data(sample_data)
 
             assert isinstance(result, Sleep)
+
+    def test_sleep_parser_builds_typed_naps(self):
+        """Real parser maps dailyNapDTOS into typed SleepNap objects."""
+        from garmy.metrics.sleep import SleepNap, parse_sleep_data
+
+        result = parse_sleep_data(self.create_sample_sleep_data())
+
+        assert result.sleep_summary.nap_time_seconds == 2700
+        assert len(result.sleep_summary.daily_nap_dtos) == 2
+        assert len(result.naps) == 2
+        assert all(isinstance(nap, SleepNap) for nap in result.naps)
+
+        first, second = result.naps
+        assert first.nap_time_sec == 1800
+        assert first.nap_feedback == "IDEAL_TIMING_IDEAL_DURATION_LOW_NEED"
+        assert first.nap_source == 0
+        assert first.device_id == 987654321
+        assert first.user_profile_pk == 12345
+        assert first.calendar_date == "2023-12-01"
+        assert second.nap_time_sec == 900
+        assert second.nap_feedback == "MULTIPLE_NAPS_DURING_DAY"
+        # Unknown / null-only keys are dropped, not passed to the dataclass
+        assert not hasattr(second, "some_future_key")
+        assert not hasattr(second, "create_timestamp_gmt")
+
+    def test_sleep_nap_datetime_properties(self):
+        """GMT timestamps parse and local times apply the second-based offset."""
+        from garmy.metrics.sleep import parse_sleep_data
+
+        nap = parse_sleep_data(self.create_sample_sleep_data()).naps[0]
+
+        assert nap.nap_start_datetime_gmt == datetime(2023, 12, 1, 20, 0, 0)
+        assert nap.nap_end_datetime_gmt == datetime(2023, 12, 1, 20, 30, 0)
+        assert nap.nap_start_datetime_local == datetime(2023, 12, 1, 12, 0, 0)
+        assert nap.nap_end_datetime_local == datetime(2023, 12, 1, 12, 30, 0)
+        assert nap.nap_duration_minutes == 30.0
+
+    def test_sleep_nap_datetime_properties_unparseable(self):
+        """Invalid or empty timestamps yield None rather than raising."""
+        from garmy.metrics.sleep import SleepNap
+
+        nap = SleepNap(nap_start_timestamp_gmt="not-a-date", nap_end_timestamp_gmt="")
+
+        assert nap.nap_start_datetime_gmt is None
+        assert nap.nap_start_datetime_local is None
+        assert nap.nap_end_datetime_gmt is None
+        assert nap.nap_end_datetime_local is None
+        assert nap.nap_duration_minutes == 0.0
+
+    def test_sleep_nap_aggregate_properties(self):
+        """nap_count / nap_duration_hours / total_sleep_with_naps_hours."""
+        from garmy.metrics.sleep import parse_sleep_data
+
+        sleep = parse_sleep_data(self.create_sample_sleep_data())
+
+        assert sleep.nap_count == 2
+        assert sleep.nap_duration_hours == 0.75
+        assert sleep.sleep_duration_hours == 8.0
+        assert sleep.total_sleep_with_naps_hours == 8.75
+        assert "• Naps: 2 (45 min)" in str(sleep)
+
+    def test_sleep_without_naps(self):
+        """Days without dailyNapDTOS parse to an empty nap list and zero totals."""
+        from garmy.metrics.sleep import parse_sleep_data
+
+        data = self.create_sample_sleep_data()
+        del data["dailySleepDto"]["dailyNapDTOS"]
+        data["dailySleepDto"]["napTimeSeconds"] = 0
+
+        sleep = parse_sleep_data(data)
+
+        assert sleep.naps == []
+        assert sleep.sleep_summary.daily_nap_dtos == []
+        assert sleep.nap_count == 0
+        assert sleep.nap_duration_hours == 0.0
+        assert sleep.total_sleep_with_naps_hours == sleep.sleep_duration_hours
+        assert "Naps" not in str(sleep)
+
+    def test_sleep_naps_null_or_malformed_list(self):
+        """A null list or non-dict entries are tolerated."""
+        from garmy.metrics.sleep import parse_sleep_data
+
+        data = self.create_sample_sleep_data()
+        data["dailySleepDto"]["dailyNapDTOS"] = None
+        assert parse_sleep_data(data).naps == []
+
+        data["dailySleepDto"]["dailyNapDTOS"] = ["bogus", 42]
+        assert parse_sleep_data(data).naps == []
+
+    def test_sleep_nap_exported_from_package(self):
+        """SleepNap is part of the public metrics API."""
+        from garmy.metrics import SleepNap as exported
+        from garmy.metrics.sleep import SleepNap
+
+        assert exported is SleepNap
 
     def test_sleep_endpoint_builder(self):
         """Test Sleep endpoint builder."""

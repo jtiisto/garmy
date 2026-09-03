@@ -19,6 +19,7 @@ from .models import (
     HealthSnapshotZoneTime,
     MetricType,
     PerformanceMetric,
+    SleepNapRecord,
     SyncStatus,
     TimeSeries,
 )
@@ -36,6 +37,18 @@ def _get_default_config() -> "DatabaseConfig":
 
         return _DatabaseConfig()
     return DatabaseConfig()
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    """Coerce an ISO-8601 string (or datetime) to a datetime; None if unparseable."""
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 class HealthDB:
@@ -134,6 +147,9 @@ class HealthDB:
                 ("hrv_baseline_low_upper", "FLOAT"),
                 ("hrv_baseline_balanced_low", "FLOAT"),
                 ("hrv_baseline_balanced_upper", "FLOAT"),
+                # Naps
+                ("nap_duration_hours", "FLOAT"),
+                ("nap_count", "INTEGER"),
             ]
 
             with self.engine.connect() as conn:
@@ -562,6 +578,9 @@ class HealthDB:
             "sleep_bedtime": metric.sleep_bedtime,
             "sleep_wake_time": metric.sleep_wake_time,
             "sleep_need_minutes": metric.sleep_need_minutes,
+            # Naps (sleep_duration_hours excludes these)
+            "nap_duration_hours": metric.nap_duration_hours,
+            "nap_count": metric.nap_count,
             # Skin temperature
             "skin_temp_deviation_c": metric.skin_temp_deviation_c,
             "skin_temp_deviation_f": (
@@ -952,16 +971,6 @@ class HealthDB:
             return
 
         with self.get_session() as session:
-            def _parse_ts(value: Any) -> Optional[datetime]:
-                if value is None or isinstance(value, datetime):
-                    return value
-                if isinstance(value, str):
-                    try:
-                        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-                    except (ValueError, TypeError):
-                        return None
-                return None
-
             cal_date = record.get("calendar_date")
             if isinstance(cal_date, str):
                 try:
@@ -973,10 +982,16 @@ class HealthDB:
                 user_id=user_id,
                 activity_uuid=activity_uuid,
                 calendar_date=cal_date,
-                start_timestamp_gmt=_parse_ts(record.get("start_timestamp_gmt")),
-                start_timestamp_local=_parse_ts(record.get("start_timestamp_local")),
-                end_timestamp_gmt=_parse_ts(record.get("end_timestamp_gmt")),
-                end_timestamp_local=_parse_ts(record.get("end_timestamp_local")),
+                start_timestamp_gmt=_parse_iso_datetime(
+                    record.get("start_timestamp_gmt")
+                ),
+                start_timestamp_local=_parse_iso_datetime(
+                    record.get("start_timestamp_local")
+                ),
+                end_timestamp_gmt=_parse_iso_datetime(record.get("end_timestamp_gmt")),
+                end_timestamp_local=_parse_iso_datetime(
+                    record.get("end_timestamp_local")
+                ),
                 wellness_activity_type=record.get("wellness_activity_type"),
                 notes=record.get("notes"),
                 rule_pk=record.get("rule_pk"),
@@ -1028,6 +1043,63 @@ class HealthDB:
                 .first()
                 is not None
             )
+
+    def store_sleep_naps(
+        self, user_id: int, calendar_date: date, naps: List[Dict[str, Any]]
+    ) -> None:
+        """Replace the stored naps for one day with the given rows.
+
+        Naps come from the same API response as the daily sleep summary, so a
+        re-sync of a day is authoritative: existing rows for (user_id,
+        calendar_date) are deleted first and the new rows written, which also
+        propagates naps the user deleted or edited in Garmin Connect. An empty
+        list therefore clears the day.
+
+        Rows are written with session.merge() so a nap already stored under a
+        different calendar_date (same GMT start) is updated rather than raising
+        an IntegrityError.
+
+        Args:
+            user_id: User identifier.
+            calendar_date: Sleep-service day the naps belong to (the sync date).
+            naps: Dicts matching SleepNapRecord columns (without user_id /
+                calendar_date, which are added here). Timestamps may be ISO
+                strings or datetimes; rows without a parseable start are skipped.
+        """
+        with self.get_session() as session:
+            session.query(SleepNapRecord).filter(
+                and_(
+                    SleepNapRecord.user_id == user_id,
+                    SleepNapRecord.calendar_date == calendar_date,
+                )
+            ).delete(synchronize_session=False)
+
+            for nap in naps:
+                start_gmt = _parse_iso_datetime(nap.get("nap_start_timestamp_gmt"))
+                if start_gmt is None:
+                    continue
+                session.merge(
+                    SleepNapRecord(
+                        user_id=user_id,
+                        nap_start_timestamp_gmt=start_gmt,
+                        calendar_date=calendar_date,
+                        nap_end_timestamp_gmt=_parse_iso_datetime(
+                            nap.get("nap_end_timestamp_gmt")
+                        ),
+                        nap_start_timestamp_local=_parse_iso_datetime(
+                            nap.get("nap_start_timestamp_local")
+                        ),
+                        nap_end_timestamp_local=_parse_iso_datetime(
+                            nap.get("nap_end_timestamp_local")
+                        ),
+                        nap_time_seconds=nap.get("nap_time_seconds"),
+                        nap_feedback=nap.get("nap_feedback"),
+                        nap_source=nap.get("nap_source"),
+                        device_id=nap.get("device_id"),
+                    )
+                )
+
+            session.commit()
 
     def _body_composition_to_dict(self, bc: BodyComposition) -> Dict[str, Any]:
         """Convert BodyComposition to dictionary."""

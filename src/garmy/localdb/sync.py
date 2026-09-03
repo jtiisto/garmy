@@ -255,6 +255,13 @@ class SyncManager:
                 )
                 summary_stored = True
 
+            # Sleep responses also carry per-nap detail. Gate on summary_stored
+            # (data was fetched), not on the list being non-empty: an empty list
+            # must still clear the day's rows (replace-per-day semantics).
+            if metric_type == MetricType.SLEEP and summary_stored:
+                nap_rows = self.extractor.extract_sleep_naps(data)
+                self.db.store_sleep_naps(user_id, sync_date, nap_rows)
+
             # Also extract timeseries data for applicable metrics
             timeseries_stored = False
             if metric_type in [
@@ -852,6 +859,8 @@ class SyncManager:
         if metric_type == MetricType.DAILY_SUMMARY:
             self.db.store_health_metric(user_id, sync_date, **data)
         elif metric_type == MetricType.SLEEP:
+            # Daily columns only; per-nap rows go to sleep_naps in
+            # _sync_metric_for_date via store_sleep_naps.
             self.db.store_health_metric(user_id, sync_date, **data)
         elif metric_type == MetricType.TRAINING_READINESS:
             self.db.store_health_metric(

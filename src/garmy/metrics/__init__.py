@@ -9,7 +9,7 @@ Available Metrics:
     BodyBattery: Energy level data throughout the day
     Stress: Stress level measurements based on HRV
     HRV: Heart rate variability data and autonomic nervous system metrics
-    Sleep: Comprehensive sleep data with stages, SpO2, and respiration
+    Sleep: Comprehensive sleep data with stages, SpO2, respiration, and naps
     HeartRate: Daily heart rate data with continuous readings and resting HR trends
     Respiration: Daily respiration data with continuous readings and sleep patterns
     Steps: Daily step counts, goals, distances, and weekly aggregations
@@ -100,7 +100,7 @@ from .hrv import HRV
 from .intensity_minutes import IntensityMinutes
 from .respiration import Respiration
 from .resting_heart_rate import RestingHeartRate
-from .sleep import Sleep
+from .sleep import Sleep, SleepNap
 from .spo2 import SpO2
 from .steps import Steps
 from .stress import Stress
@@ -124,6 +124,7 @@ __all__: List[str] = [
     "Respiration",
     "RestingHeartRate",
     "Sleep",
+    "SleepNap",
     "SpO2",
     "Steps",
     "Stress",
