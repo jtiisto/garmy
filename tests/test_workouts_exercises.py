@@ -772,8 +772,10 @@ class TestPerformance:
         for _ in range(20):
             matcher.search("bench", limit=10)
         elapsed = time.time() - start
-        # Should complete 20 searches in less than 2 seconds
-        assert elapsed < 2.0
+        # Smoke test for pathological slowness only. 20 searches take ~1s
+        # uninstrumented but several seconds under coverage tracing (the
+        # default addopts and CI), so the budget must survive that overhead.
+        assert elapsed < 10.0
 
     def test_list_categories_completes_quickly(self, matcher):
         """Test list_categories completes quickly."""

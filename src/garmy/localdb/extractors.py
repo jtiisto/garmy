@@ -3,6 +3,7 @@
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from ..core.utils import epoch_ms_to_utc_datetime
 from .models import MetricType
 
 
@@ -84,8 +85,6 @@ class DataExtractor:
 
     def _extract_sleep_data(self, data: Any) -> Dict[str, Any]:
         """Extract sleep data from Sleep object."""
-        from datetime import datetime
-
         result = {
             # Use the built-in properties from Sleep class
             "sleep_duration_hours": getattr(data, "sleep_duration_hours", None),
@@ -149,20 +148,22 @@ class DataExtractor:
             sleep_start = getattr(summary, "sleep_start_timestamp_local", None)
             sleep_end = getattr(summary, "sleep_end_timestamp_local", None)
 
+            # Garmin *Local epochs are pre-shifted by the device offset: read
+            # them as UTC to get the device wall clock, independent of host TZ.
             if sleep_start:
                 try:
-                    result["sleep_bedtime"] = datetime.fromtimestamp(
-                        sleep_start / 1000
+                    result["sleep_bedtime"] = epoch_ms_to_utc_datetime(
+                        sleep_start
                     ).isoformat()
-                except (ValueError, OSError):
+                except (ValueError, OSError, OverflowError):
                     pass
 
             if sleep_end:
                 try:
-                    result["sleep_wake_time"] = datetime.fromtimestamp(
-                        sleep_end / 1000
+                    result["sleep_wake_time"] = epoch_ms_to_utc_datetime(
+                        sleep_end
                     ).isoformat()
-                except (ValueError, OSError):
+                except (ValueError, OSError, OverflowError):
                     pass
 
         # NEW: Extract skin temp from top-level Sleep object (not summary)

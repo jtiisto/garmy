@@ -443,6 +443,8 @@ Database schema migrations are **automatic**. When new columns or tables are add
 
 For existing databases, new columns are added to the `activities` table using `ALTER TABLE` statements on first use.
 
+Databases synced on a non-UTC machine before September 2026 hold `sleep_bedtime` / `sleep_wake_time` values shifted by that machine's UTC offset (Garmin's local timestamps were converted a second time). Stored values are now the device's wall-clock time regardless of host timezone. Re-syncing `SLEEP` rewrites the old rows, for example `garmy-sync sync --metrics SLEEP --resync-days 90` (note that `--resync-days` resets the sync status of **all** metrics for those days).
+
 ### Common Issues
 
 1. **Database Lock Errors**

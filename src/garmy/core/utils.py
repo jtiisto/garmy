@@ -25,7 +25,7 @@ Example:
 import logging
 import re
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -248,19 +248,24 @@ class TimestampMixin:
 
     @staticmethod
     def timestamp_to_datetime(timestamp: int) -> datetime:
-        """Convert Unix timestamp (milliseconds) to datetime object.
+        """Convert Unix timestamp (milliseconds) to a naive UTC datetime.
+
+        The result does not depend on the host timezone. Garmin ``*GMT``
+        epochs therefore yield true UTC, and Garmin ``*Local`` epochs (which
+        are pre-shifted by the device's UTC offset) yield the device's
+        wall-clock time.
 
         Args:
             timestamp: Unix timestamp in milliseconds.
 
         Returns:
-            Corresponding datetime object.
+            Naive datetime in UTC.
 
         Example:
             >>> TimestampMixin.timestamp_to_datetime(1640995200000)
             datetime.datetime(2022, 1, 1, 0, 0)
         """
-        return datetime.fromtimestamp(timestamp / 1000)
+        return epoch_ms_to_utc_datetime(timestamp)
 
     @staticmethod
     def iso_to_datetime(iso_string: Optional[str]) -> Optional[datetime]:
@@ -301,6 +306,31 @@ class TimestampMixin:
             return datetime.fromisoformat(iso_string)
         except (ValueError, AttributeError):
             return None
+
+
+def epoch_ms_to_utc_datetime(timestamp_ms: int) -> datetime:
+    """Convert epoch milliseconds to a naive datetime in UTC wall-clock time.
+
+    The result does not depend on the host timezone. Garmin's ``*Local``
+    epochs are already shifted by the device's UTC offset, so reading them as
+    UTC yields the device wall clock; ``*GMT`` epochs yield true UTC. This is
+    the single conversion behind ``TimestampMixin.timestamp_to_datetime`` and
+    every persisted timestamp, so in-memory values and databases agree on any
+    host.
+
+    Args:
+        timestamp_ms: Unix timestamp in milliseconds.
+
+    Returns:
+        Naive datetime in UTC.
+
+    Example:
+        >>> epoch_ms_to_utc_datetime(1640995200000)
+        datetime.datetime(2022, 1, 1, 0, 0)
+    """
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).replace(
+        tzinfo=None
+    )
 
 
 def create_simple_parser(

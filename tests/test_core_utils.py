@@ -439,7 +439,7 @@ class TestTimestampMixin:
     """Test cases for TimestampMixin class."""
 
     def test_timestamp_to_datetime(self):
-        """Test timestamp_to_datetime method."""
+        """Test timestamp_to_datetime method (UTC, independent of host TZ)."""
         # Test Unix timestamp in milliseconds
         timestamp = 1640995200000  # 2022-01-01 00:00:00 UTC
         result = TimestampMixin.timestamp_to_datetime(timestamp)

@@ -43,7 +43,7 @@ class BodyBatteryReading(TimestampMixin):
 
     @property
     def datetime(self) -> "datetime":
-        """Convert timestamp to datetime object."""
+        """Reading time as a naive UTC datetime (host-timezone independent)."""
         return self.timestamp_to_datetime(self.timestamp)
 
 

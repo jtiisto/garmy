@@ -96,22 +96,22 @@ class SleepSummary(TimestampMixin):
 
     @property
     def sleep_start_datetime_gmt(self) -> "datetime":
-        """Convert GMT sleep start timestamp to datetime."""
+        """Sleep start as a naive UTC datetime (host-timezone independent)."""
         return self.timestamp_to_datetime(self.sleep_start_timestamp_gmt)
 
     @property
     def sleep_end_datetime_gmt(self) -> "datetime":
-        """Convert GMT sleep end timestamp to datetime."""
+        """Sleep end as a naive UTC datetime (host-timezone independent)."""
         return self.timestamp_to_datetime(self.sleep_end_timestamp_gmt)
 
     @property
     def sleep_start_datetime_local(self) -> "datetime":
-        """Convert local sleep start timestamp to datetime."""
+        """Sleep start as the device's wall-clock time (naive, offset applied by Garmin)."""
         return self.timestamp_to_datetime(self.sleep_start_timestamp_local)
 
     @property
     def sleep_end_datetime_local(self) -> "datetime":
-        """Convert local sleep end timestamp to datetime."""
+        """Sleep end as the device's wall-clock time (naive, offset applied by Garmin)."""
         return self.timestamp_to_datetime(self.sleep_end_timestamp_local)
 
     @property
