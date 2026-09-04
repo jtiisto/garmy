@@ -247,8 +247,10 @@ class TestTokenManager:
 class TestTokenFileManager:
     """Test cases for TokenFileManager class."""
 
-    def test_token_file_manager_default_dir(self):
+    def test_token_file_manager_default_dir(self, monkeypatch):
         """Test TokenFileManager uses default directory."""
+        # A profile path in the developer's environment would take precedence
+        monkeypatch.delenv("GARMY_PROFILE_PATH", raising=False)
         with patch("pathlib.Path.home") as mock_home:
             mock_home.return_value = Path("/home/user")
             manager = TokenFileManager()

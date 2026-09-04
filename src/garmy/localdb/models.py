@@ -241,8 +241,8 @@ class DailyHealthMetric(Base):
     # Sleep enhancements
     sleep_score = Column(Integer)  # 0-100 overall score
     sleep_score_qualifier = Column(String)  # POOR, FAIR, GOOD, EXCELLENT
-    sleep_bedtime = Column(String)  # ISO timestamp string
-    sleep_wake_time = Column(String)  # ISO timestamp string
+    sleep_bedtime = Column(String)  # ISO string, device-local wall clock
+    sleep_wake_time = Column(String)  # ISO string, device-local wall clock
     sleep_need_minutes = Column(Integer)  # Target sleep in minutes
 
     # Naps (from dailySleepDTO.napTimeSeconds / dailyNapDTOS).

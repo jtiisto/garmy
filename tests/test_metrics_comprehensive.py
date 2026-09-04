@@ -367,7 +367,7 @@ class TestBodyBattery:
         assert reading.version == 1.0
 
     def test_body_battery_reading_datetime_property(self):
-        """Test BodyBatteryReading datetime property."""
+        """Test BodyBatteryReading datetime property (UTC, independent of host TZ)."""
         from garmy.metrics.body_battery import BodyBatteryReading
 
         reading = BodyBatteryReading(
@@ -712,10 +712,12 @@ class TestSleep:
 
         sleep = Sleep(sleep_summary=summary)
 
-        assert sleep.deep_sleep_percentage == 0
-        assert sleep.light_sleep_percentage == 0
-        assert sleep.rem_sleep_percentage == 0
-        assert sleep.awake_percentage == 0
+        # No sleep recorded -> percentages are None (not 0), so "no data" stays
+        # distinguishable from a genuine 0% stage.
+        assert sleep.deep_sleep_percentage is None
+        assert sleep.light_sleep_percentage is None
+        assert sleep.rem_sleep_percentage is None
+        assert sleep.awake_percentage is None
 
     def test_sleep_parser(self):
         """Test Sleep parser function."""
@@ -1588,10 +1590,12 @@ class TestMetricsEdgeCases:
         sleep = Sleep(sleep_summary=summary)
 
         # Should handle division by zero gracefully
-        assert sleep.deep_sleep_percentage == 0
-        assert sleep.light_sleep_percentage == 0
-        assert sleep.rem_sleep_percentage == 0
-        assert sleep.awake_percentage == 0
+        # No sleep recorded -> percentages are None (not 0), so "no data" stays
+        # distinguishable from a genuine 0% stage.
+        assert sleep.deep_sleep_percentage is None
+        assert sleep.light_sleep_percentage is None
+        assert sleep.rem_sleep_percentage is None
+        assert sleep.awake_percentage is None
 
     def test_list_property_with_empty_data(self):
         """Test list properties handle empty data correctly."""

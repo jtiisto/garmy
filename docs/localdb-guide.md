@@ -478,6 +478,8 @@ garmy-sync sync --metrics SLEEP --resync-days 90
 
 Note that `--resync-days` resets the sync status of **all** metrics for those days, so the next full sync will re-fetch them as well.
 
+Databases synced on a non-UTC machine before September 2026 hold `sleep_bedtime` / `sleep_wake_time` values shifted by that machine's UTC offset (Garmin's local timestamps were converted a second time). Stored values are now the device's wall-clock time regardless of host timezone. Re-syncing `SLEEP` rewrites the old rows, for example `garmy-sync sync --metrics SLEEP --resync-days 90` (note that `--resync-days` resets the sync status of **all** metrics for those days).
+
 ### Common Issues
 
 1. **Database Lock Errors**

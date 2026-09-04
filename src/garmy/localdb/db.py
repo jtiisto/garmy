@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from sqlalchemy import and_, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..core.utils import epoch_ms_to_utc_datetime
 from .models import (
     Activity,
     ActivitySplit,
@@ -895,8 +896,9 @@ class HealthDB:
                 user_id=user_id,
                 sample_pk=entry["sample_pk"],
                 measurement_date=measurement_date,
+                # True UTC regardless of host timezone (column is named _gmt)
                 timestamp_gmt=(
-                    datetime.fromtimestamp(entry["timestamp_gmt"] / 1000)
+                    epoch_ms_to_utc_datetime(entry["timestamp_gmt"])
                     if entry.get("timestamp_gmt")
                     else None
                 ),
