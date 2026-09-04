@@ -18,7 +18,8 @@ The Garmy LocalDB uses SQLite with optimized tables for health data storage:
 daily_health_metrics (Primary health data)
 ├── user_id, metric_date (PK)
 ├── Steps: total_steps, step_goal, total_distance_meters
-├── Sleep: sleep_duration_hours, deep_sleep_hours, rem_sleep_hours
+├── Sleep: sleep_duration_hours (excl. naps), deep_sleep_hours, rem_sleep_hours
+├── Naps: nap_duration_hours, nap_count (per-nap rows in sleep_naps)
 ├── Heart Rate: resting_heart_rate, max_heart_rate, average_heart_rate
 ├── Stress: avg_stress_level, max_stress_level
 ├── Body Battery: body_battery_high, body_battery_low
@@ -63,6 +64,13 @@ performance_metrics (Post-activity performance metrics)
 ├── Training Load: acute_load, chronic_load, load_balance, load_type
 ├── Training Status: training_status (int code), training_status_feedback
 ├── Endurance: endurance_score, endurance_score_classification (int code)
+└── created_at, updated_at
+
+sleep_naps (Individual naps; joins to daily_health_metrics on calendar_date)
+├── user_id, nap_start_timestamp_gmt (PK)
+├── calendar_date, nap_end_timestamp_gmt
+├── nap_start_timestamp_local, nap_end_timestamp_local
+├── nap_time_seconds, nap_feedback, nap_source, device_id
 └── created_at, updated_at
 
 sync_status (Sync tracking)
@@ -117,6 +125,10 @@ deep_sleep_percentage FLOAT     -- % of sleep in deep
 light_sleep_percentage FLOAT    -- % of sleep in light
 rem_sleep_percentage FLOAT      -- % of sleep in REM
 awake_percentage     FLOAT      -- % of time awake
+
+-- Naps (NOT included in sleep_duration_hours; per-nap rows in sleep_naps)
+nap_duration_hours   FLOAT      -- Total nap time; 0 = synced day without naps, NULL = not synced since nap support
+nap_count            INTEGER    -- Number of naps that day
 
 -- SpO2
 average_spo2         FLOAT      -- Average blood oxygen
@@ -375,6 +387,38 @@ WHERE user_id = 1 AND metric_date <= '2026-03-24'
 ORDER BY metric_date DESC LIMIT 1;
 ```
 
+### `sleep_naps`
+**Purpose:** Individual naps detected by the watch, from `dailySleepDTO.dailyNapDTOS` on the sleep endpoint (synced together with `SLEEP`)
+
+**Primary Key:** `(user_id, nap_start_timestamp_gmt)` — the API gives naps no id, so the GMT start is the natural key
+
+**Columns:**
+```sql
+user_id                          INTEGER  -- User identifier
+nap_start_timestamp_gmt          DATETIME -- Nap start, UTC (stored as 'YYYY-MM-DD HH:MM:SS.ffffff')
+calendar_date                    DATE     -- Sleep-service day; joins to daily_health_metrics.metric_date
+nap_end_timestamp_gmt            DATETIME -- Nap end, UTC
+nap_start_timestamp_local        DATETIME -- Nap start with the device's UTC offset applied
+nap_end_timestamp_local          DATETIME -- Nap end with the device's UTC offset applied
+nap_time_seconds                 INTEGER  -- Duration (equals end - start)
+nap_feedback                     TEXT     -- Garmin enum, e.g. IDEAL_TIMING_IDEAL_DURATION_LOW_NEED, MULTIPLE_NAPS_DURING_DAY
+nap_source                       INTEGER  -- Undocumented; 0 observed for device-detected naps
+device_id                        INTEGER  -- Recording device
+created_at                       DATETIME -- Record creation time
+updated_at                       DATETIME -- Last update time
+```
+
+**Sync Behaviour:** Rows for a day are replaced on every re-sync (delete + insert), so naps removed in Garmin Connect are removed locally too. Days synced before nap support have no rows here and `daily_health_metrics.nap_count IS NULL` until re-synced (`garmy-sync sync --metrics SLEEP --resync-days N`).
+
+**Query Pattern:** Join to the daily row on user and date:
+```sql
+SELECT d.metric_date, d.sleep_duration_hours, n.nap_start_timestamp_local, n.nap_time_seconds / 60.0 AS nap_minutes
+FROM daily_health_metrics d
+JOIN sleep_naps n ON n.user_id = d.user_id AND n.calendar_date = d.metric_date
+WHERE d.user_id = 1
+ORDER BY n.nap_start_timestamp_gmt DESC;
+```
+
 ## 🔍 Common Queries
 
 ### Daily Health Trends
@@ -398,7 +442,9 @@ SELECT
     sleep_duration_hours,
     deep_sleep_percentage,
     rem_sleep_percentage,
-    hrv_last_night_avg
+    hrv_last_night_avg,
+    nap_count,
+    sleep_duration_hours + COALESCE(nap_duration_hours, 0) AS total_sleep_hours
 FROM daily_health_metrics 
 WHERE user_id = 1 
     AND sleep_duration_hours IS NOT NULL

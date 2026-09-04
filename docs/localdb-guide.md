@@ -51,6 +51,7 @@ Normalized daily health data with dedicated columns for efficient querying.
 **Key Fields:**
 - `user_id`, `metric_date` (Primary Key)
 - `total_steps`, `sleep_duration_hours`, `resting_heart_rate`
+- `nap_duration_hours`, `nap_count` (naps are **not** included in `sleep_duration_hours`)
 - `avg_stress_level`, `body_battery_high/low`
 - `training_readiness_score`, `hrv_weekly_avg`
 
@@ -88,6 +89,16 @@ Lap/split data from cardio activities (running, cycling, walking, etc.).
 - `avg_speed`, `max_speed`, `avg_heart_rate`, `max_heart_rate`
 - `elevation_gain`, `elevation_loss`, `avg_cadence`
 - `start_latitude`, `start_longitude`, `end_latitude`, `end_longitude`
+
+#### `sleep_naps`
+Individual naps detected by the watch (one row per nap; synced together with `SLEEP`).
+Rows for a day are replaced on every re-sync, so naps deleted in Garmin Connect disappear locally too.
+
+**Key Fields:**
+- `user_id`, `nap_start_timestamp_gmt` (Primary Key)
+- `calendar_date` — joins to `daily_health_metrics.metric_date`
+- `nap_end_timestamp_gmt`, `nap_start_timestamp_local`, `nap_end_timestamp_local` (local = GMT + device offset)
+- `nap_time_seconds`, `nap_feedback` (Garmin enum), `nap_source`, `device_id`
 
 #### `sync_status`
 Sync status tracking for each metric per date.
@@ -228,6 +239,22 @@ with db.get_session() as session:
     for row in results:
         print(f"{row.metric_date}: {row.sleep_duration_hours:.1f}h sleep, "
               f"{row.deep_sleep_percentage:.1f}% deep")
+
+# Naps are stored separately: sleep_duration_hours is the main window only
+nap_query = """
+    SELECT
+        d.metric_date,
+        d.sleep_duration_hours + COALESCE(d.nap_duration_hours, 0) AS total_sleep_hours,
+        d.nap_count,
+        n.nap_start_timestamp_local,
+        n.nap_time_seconds / 60.0 AS nap_minutes
+    FROM daily_health_metrics d
+    LEFT JOIN sleep_naps n
+        ON n.user_id = d.user_id AND n.calendar_date = d.metric_date
+    WHERE d.user_id = 1
+        AND d.metric_date >= date('now', '-30 days')
+    ORDER BY d.metric_date, n.nap_start_timestamp_gmt
+"""
 ```
 
 ### Activity Performance
@@ -441,7 +468,15 @@ stats = sync_manager.sync_range(user_id=1, start_date=start_date, end_date=end_d
 
 Database schema migrations are **automatic**. When new columns or tables are added (like `exercise_sets`), they are created automatically when you use the database. No manual migration steps required.
 
-For existing databases, new columns are added to the `activities` table using `ALTER TABLE` statements on first use.
+For existing databases, new columns are added to the `activities` and `daily_health_metrics` tables using `ALTER TABLE` statements on first use; new tables (such as `sleep_naps`) are created by `create_all`.
+
+Migrations add columns but do not backfill data. Days synced before a feature existed keep `NULL` in the new columns until they are re-synced. For example, to backfill naps for the last 90 days:
+
+```bash
+garmy-sync sync --metrics SLEEP --resync-days 90
+```
+
+Note that `--resync-days` resets the sync status of **all** metrics for those days, so the next full sync will re-fetch them as well.
 
 ### Common Issues
 

@@ -148,12 +148,20 @@ WHERE user_id = 1
 SELECT timestamp, value 
 FROM timeseries 
 WHERE metric_type = 'heart_rate' AND user_id = 1
+
+-- Naps: per-nap detail (sleep_duration_hours excludes naps)
+SELECT calendar_date, nap_start_timestamp_local, nap_time_seconds/60.0 AS minutes, nap_feedback
+FROM sleep_naps
+WHERE user_id = 1
+ORDER BY calendar_date DESC LIMIT 20
 ```
 
 #### `get_health_summary(user_id, days)`
 **When to use:** For quick health overview without writing SQL
 
-Ready-made summary of key health metrics over a specified period.
+Ready-made summary of key health metrics over a specified period. Includes
+`total_naps` and `avg_nap_hours_on_nap_days`; `avg_sleep_hours` is the main
+sleep window only and excludes naps.
 
 **Example:**
 ```python
@@ -241,6 +249,29 @@ WHERE user_id = 1
     AND metric_date >= date('now', '-30 days')
     AND sleep_duration_hours IS NOT NULL
 ORDER BY metric_date;
+
+-- Total sleep including naps (sleep_duration_hours is the main window only)
+SELECT 
+    d.metric_date,
+    d.sleep_duration_hours,
+    d.nap_duration_hours,
+    d.nap_count,
+    d.sleep_duration_hours + COALESCE(d.nap_duration_hours, 0) AS total_sleep_hours
+FROM daily_health_metrics d
+WHERE d.user_id = 1 
+    AND d.metric_date >= date('now', '-30 days')
+ORDER BY d.metric_date;
+
+-- Individual naps with local start time and Garmin feedback
+SELECT 
+    calendar_date,
+    time(nap_start_timestamp_local) AS start_local,
+    nap_time_seconds / 60.0 AS minutes,
+    nap_feedback
+FROM sleep_naps
+WHERE user_id = 1
+ORDER BY nap_start_timestamp_gmt DESC
+LIMIT 20;
 ```
 
 ### Activity Performance

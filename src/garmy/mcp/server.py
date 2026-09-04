@@ -25,6 +25,27 @@ from ..localdb.models import MetricType
 from .config import MCPConfig
 
 
+# Aggregate query behind get_health_summary (module-level so it is testable).
+# sleep_duration_hours excludes naps; nap averages are over nap days only.
+_HEALTH_SUMMARY_QUERY = """
+    SELECT
+        COUNT(*) as total_days_with_data,
+        ROUND(AVG(total_steps), 0) as avg_daily_steps,
+        ROUND(AVG(sleep_duration_hours), 1) as avg_sleep_hours,
+        ROUND(AVG(resting_heart_rate), 0) as avg_resting_hr,
+        ROUND(AVG(avg_stress_level), 0) as avg_stress_level,
+        SUM(nap_count) as total_naps,
+        ROUND(
+            AVG(CASE WHEN nap_count > 0 THEN nap_duration_hours END), 2
+        ) as avg_nap_hours_on_nap_days,
+        MIN(metric_date) as earliest_data_date,
+        MAX(metric_date) as latest_data_date
+    FROM daily_health_metrics
+    WHERE user_id = ?
+    AND metric_date >= date('now', '-' || ? || ' days')
+"""
+
+
 class SQLiteConnection:
     """Secure SQLite connection context manager for read-only access."""
 
@@ -329,6 +350,7 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
         - Health metrics: "SELECT metric_date, sleep_duration_hours FROM daily_health_metrics WHERE user_id = 1 ORDER BY metric_date DESC LIMIT 10"
         - Activities: "SELECT activity_date, activity_name, duration_seconds FROM activities WHERE user_id = 1"
         - High step days: "SELECT metric_date, total_steps FROM daily_health_metrics WHERE total_steps > 10000"
+        - Naps (sleep_duration_hours excludes them): "SELECT calendar_date, nap_start_timestamp_local, nap_time_seconds/60.0 AS minutes FROM sleep_naps WHERE user_id = 1 ORDER BY calendar_date DESC LIMIT 10"
         - Timeseries data (timestamp is epoch ms): "SELECT datetime(timestamp/1000, 'unixepoch', 'localtime') as ts, value FROM timeseries WHERE metric_type = 'heart_rate' AND timestamp/1000 BETWEEN unixepoch('2026-01-01', 'localtime') AND unixepoch('2026-01-02', 'localtime')"
 
         Returns:
@@ -354,7 +376,9 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
             days: Number of recent days to analyze (max 365, default: 30)
 
         Returns:
-            Summary statistics including averages for steps, sleep, heart rate, stress, and activity count
+            Summary statistics including averages for steps, sleep, heart rate, stress,
+            activity count, and naps (total_naps, avg_nap_hours_on_nap_days).
+            avg_sleep_hours is the main sleep window only and excludes naps.
         """
         if days > 365:
             raise ValueError("Days cannot exceed 365")
@@ -364,22 +388,8 @@ def create_mcp_server(config: Optional[MCPConfig] = None) -> FastMCP:
 
         try:
             # Get health metrics summary
-            summary_query = """
-                SELECT 
-                    COUNT(*) as total_days_with_data,
-                    ROUND(AVG(total_steps), 0) as avg_daily_steps,
-                    ROUND(AVG(sleep_duration_hours), 1) as avg_sleep_hours,
-                    ROUND(AVG(resting_heart_rate), 0) as avg_resting_hr,
-                    ROUND(AVG(avg_stress_level), 0) as avg_stress_level,
-                    MIN(metric_date) as earliest_data_date,
-                    MAX(metric_date) as latest_data_date
-                FROM daily_health_metrics 
-                WHERE user_id = ? 
-                AND metric_date >= date('now', '-' || ? || ' days')
-            """
-
             summary_result = db_manager.execute_safe_query(
-                summary_query, [user_id, days]
+                _HEALTH_SUMMARY_QUERY, [user_id, days]
             )
             summary = summary_result[0] if summary_result else {}
 
@@ -481,7 +491,8 @@ def _register_sync_tool(mcp: FastMCP, config: MCPConfig) -> None:
         Args:
             last_days: Number of days to sync, counting back from today (default: 7, max: 30)
             metrics: Comma-separated list of metrics to sync (default: all).
-                     Available: DAILY_SUMMARY, SLEEP, HEART_RATE, STEPS, STRESS,
+                     Available: DAILY_SUMMARY, SLEEP (also writes sleep_naps),
+                     HEART_RATE, STEPS, STRESS,
                      BODY_BATTERY, HRV, CALORIES, RESPIRATION, TRAINING_READINESS,
                      ACTIVITIES, BODY_COMPOSITION, SPO2, RESTING_HEART_RATE,
                      INTENSITY_MINUTES, FLOORS, TRAINING_STATUS, ENDURANCE_SCORE,
@@ -1204,6 +1215,7 @@ def _get_table_description(table_name: str) -> str:
         "health_snapshots": "Health Snapshot recordings — on-demand ~2-minute multi-metric measurements taken on a Garmin watch (HR, respiration, stress, SpO2, HRV). One row per snapshot with timing, device metadata, and calendar_date. Sparse — typically a handful per month.",
         "health_snapshot_summaries": "Per-metric summary stats for each health snapshot. summary_type values: HEART_RATE, RESPIRATION, STRESS, SPO2 (each with min/max/avg) plus RMSSD_HRV, SDRR_HRV (avg only — min/max are NULL). Join to health_snapshots on (user_id, activity_uuid).",
         "health_snapshot_zones": "Per-zone time-in-zone for each health snapshot. zone_number 0..5 with millis_in_zone (time spent in zone) and zone_low_boundary (HR threshold for the lower bound). Join to health_snapshots on (user_id, activity_uuid).",
+        "sleep_naps": "Individual naps detected by the watch — one row per nap, sparse. Timestamps are 'YYYY-MM-DD HH:MM:SS.ffffff' strings (date()/time()/strftime() work on them); *_gmt columns are UTC and *_local already have the device's offset applied. nap_time_seconds is the duration; nap_feedback is a Garmin enum (e.g. IDEAL_TIMING_IDEAL_DURATION_LOW_NEED, MULTIPLE_NAPS_DURING_DAY). Join to daily_health_metrics on user_id AND calendar_date = metric_date. daily_health_metrics.sleep_duration_hours EXCLUDES naps — use its nap_duration_hours / nap_count for daily totals.",
     }
     return descriptions.get(table_name, "Health data table")
 
@@ -1222,10 +1234,12 @@ def _get_health_data_guide() -> str:
 
 ### daily_health_metrics
 **WHAT**: Daily summaries of all health metrics
-**CONTAINS**: steps, sleep hours, heart rate averages, stress levels, body battery
+**CONTAINS**: steps, sleep hours, heart rate averages, stress levels, body battery, nap totals (nap_duration_hours, nap_count)
+**NAPS**: `sleep_duration_hours` is the main sleep window only and EXCLUDES naps. Total daily sleep = `sleep_duration_hours + COALESCE(nap_duration_hours, 0)`. `nap_count = 0` is a synced nap-free day; `nap_count IS NULL` means the day has not been re-synced since nap support was added.
 **COMMON QUERIES**:
 - Recent trends: `SELECT metric_date, total_steps, sleep_duration_hours FROM daily_health_metrics WHERE user_id = 1 ORDER BY metric_date DESC LIMIT 30`
 - Sleep analysis: `SELECT metric_date, sleep_duration_hours, deep_sleep_hours FROM daily_health_metrics WHERE sleep_duration_hours IS NOT NULL`
+- Total sleep incl. naps: `SELECT metric_date, sleep_duration_hours + COALESCE(nap_duration_hours, 0) AS total_sleep_hours, nap_count FROM daily_health_metrics WHERE user_id = 1 ORDER BY metric_date DESC LIMIT 30`
 
 ### activities
 **WHAT**: Individual workouts and physical activities
@@ -1258,9 +1272,19 @@ def _get_health_data_guide() -> str:
 - All metrics for one snapshot: `SELECT summary_type, min_value, max_value, avg_value FROM health_snapshot_summaries WHERE user_id = 1 AND activity_uuid = ?`
 - Snapshot HR zone time: `SELECT zone_number, millis_in_zone/1000.0 as seconds_in_zone, zone_low_boundary FROM health_snapshot_zones WHERE user_id = 1 AND activity_uuid = ? ORDER BY zone_number`
 
+### sleep_naps
+**WHAT**: Individual naps detected by the watch (one row per nap; sparse — only days with naps have rows)
+**CONTAINS**: nap_start/end_timestamp_gmt (UTC) and nap_start/end_timestamp_local (device offset applied), nap_time_seconds, nap_feedback (Garmin enum), nap_source, device_id
+**JOIN KEY**: `daily_health_metrics` on `user_id` AND `sleep_naps.calendar_date = daily_health_metrics.metric_date`
+**NOTE**: Timestamps are 'YYYY-MM-DD HH:MM:SS.ffffff' strings (space-separated, so `date()` / `time()` / `strftime()` work directly). Synced together with SLEEP; days synced before nap support have `daily_health_metrics.nap_count IS NULL` and no rows here until re-synced.
+**COMMON QUERIES**:
+- Recent naps: `SELECT calendar_date, time(nap_start_timestamp_local) AS start_local, nap_time_seconds/60.0 AS minutes, nap_feedback FROM sleep_naps WHERE user_id = 1 ORDER BY nap_start_timestamp_gmt DESC LIMIT 20`
+- Nap days with main sleep: `SELECT d.metric_date, d.sleep_duration_hours, d.nap_duration_hours, d.nap_count FROM daily_health_metrics d WHERE d.user_id = 1 AND d.nap_count > 0 ORDER BY d.metric_date DESC`
+- Nap timing distribution: `SELECT strftime('%H', nap_start_timestamp_local) AS hour_local, COUNT(*) AS naps, ROUND(AVG(nap_time_seconds)/60.0, 1) AS avg_minutes FROM sleep_naps WHERE user_id = 1 GROUP BY hour_local ORDER BY hour_local`
+
 ## Health Metrics Available
 - **Steps & Movement**: total_steps, total_distance_meters
-- **Sleep**: sleep_duration_hours, deep_sleep_hours, rem_sleep_hours
+- **Sleep**: sleep_duration_hours (excludes naps), deep_sleep_hours, rem_sleep_hours, nap_duration_hours, nap_count (per-nap detail in sleep_naps)
 - **Heart Rate**: resting_heart_rate, max_heart_rate, average_heart_rate
 - **Stress & Recovery**: avg_stress_level, body_battery_high/low
 - **Training**: training_readiness_score, activities data

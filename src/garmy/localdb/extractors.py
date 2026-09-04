@@ -108,6 +108,10 @@ class DataExtractor:
             "sleep_need_minutes": None,
             # NEW: Skin temperature
             "skin_temp_deviation_c": None,
+            # Naps: always written (0 / 0.0 on nap-free days) so a re-sync clears
+            # stale values and NULL means "not synced since nap support".
+            "nap_duration_hours": None,
+            "nap_count": None,
         }
 
         # Extract from sleep_summary if available
@@ -131,6 +135,12 @@ class DataExtractor:
             result["average_respiration"] = getattr(
                 summary, "average_respiration_value", None
             )
+
+            # Naps: daily total from napTimeSeconds, count from the typed list
+            # (hours can be > 0 with an empty list if the DTO list is absent).
+            nap_seconds = getattr(summary, "nap_time_seconds", None) or 0
+            result["nap_duration_hours"] = nap_seconds / 3600
+            result["nap_count"] = len(getattr(data, "naps", None) or [])
 
             # NEW: Extract sleep scores from nested dict
             sleep_scores = getattr(summary, "sleep_scores", None)
@@ -171,6 +181,41 @@ class DataExtractor:
             result["skin_temp_deviation_c"] = skin_temp
 
         return result
+
+    def extract_sleep_naps(self, data: Any) -> List[Dict[str, Any]]:
+        """Extract DB-ready rows for the sleep_naps table from a Sleep object.
+
+        Args:
+            data: Sleep dataclass instance (its ``naps`` list holds SleepNap
+                objects built from dailySleepDTO.dailyNapDTOS).
+
+        Returns:
+            One dict per nap matching SleepNapRecord columns. user_id and
+            calendar_date are added by the caller (HealthDB.store_sleep_naps).
+            Naps without a parseable GMT start time are skipped.
+        """
+        rows: List[Dict[str, Any]] = []
+        for nap in getattr(data, "naps", None) or []:
+            start_gmt = getattr(nap, "nap_start_datetime_gmt", None)
+            if start_gmt is None:
+                continue
+            rows.append(
+                {
+                    "nap_start_timestamp_gmt": start_gmt,
+                    "nap_end_timestamp_gmt": getattr(nap, "nap_end_datetime_gmt", None),
+                    "nap_start_timestamp_local": getattr(
+                        nap, "nap_start_datetime_local", None
+                    ),
+                    "nap_end_timestamp_local": getattr(
+                        nap, "nap_end_datetime_local", None
+                    ),
+                    "nap_time_seconds": getattr(nap, "nap_time_sec", None),
+                    "nap_feedback": getattr(nap, "nap_feedback", None),
+                    "nap_source": getattr(nap, "nap_source", None),
+                    "device_id": getattr(nap, "device_id", None),
+                }
+            )
+        return rows
 
     def _extract_heart_rate_summary(self, data: Any) -> Dict[str, Any]:
         """Extract heart rate summary data."""

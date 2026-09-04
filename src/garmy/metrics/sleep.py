@@ -19,16 +19,22 @@ Example:
     >>> print(f"Sleep duration: {sleep.sleep_duration_hours:.1f} hours")
     >>> print(f"Deep sleep: {sleep.deep_sleep_percentage:.1f}%")
     >>> print(f"SpO2 average: {sleep.daily_sleep_dto.average_sp_o2_value}%")
+    >>>
+    >>> # Naps are reported separately from the main sleep window
+    >>> print(f"Naps: {sleep.nap_count}, total {sleep.nap_duration_hours:.2f} h")
+    >>> for nap in sleep.naps:
+    ...     print(nap.nap_start_datetime_local, nap.nap_duration_minutes)
 
 Data Source:
     Garmin Connect API endpoint: /sleep-service/sleep/dailySleepData
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 if TYPE_CHECKING:
-    from datetime import date, datetime
+    from datetime import date
 
 from ..core.base import MetricConfig
 from ..core.endpoint_builders import build_sleep_endpoint as _build_sleep_endpoint
@@ -94,6 +100,10 @@ class SleepSummary(TimestampMixin):
     sleep_need: Optional[Dict[str, Any]] = None
     next_sleep_need: Optional[Dict[str, Any]] = None
 
+    # Per-nap entries (dailyNapDTOS, snake_cased); only present on nap days.
+    # Typed access via Sleep.naps.
+    daily_nap_dtos: List[Dict[str, Any]] = field(default_factory=list)
+
     @property
     def sleep_start_datetime_gmt(self) -> "datetime":
         """Convert GMT sleep start timestamp to datetime."""
@@ -139,6 +149,70 @@ class SleepSummary(TimestampMixin):
 
 
 @dataclass
+class SleepNap(TimestampMixin):
+    """A single nap from dailySleepDTO.dailyNapDTOS.
+
+    Garmin reports naps separately from the main sleep window:
+    ``SleepSummary.sleep_time_seconds`` excludes nap time and
+    ``SleepSummary.nap_time_seconds`` is the daily nap total.
+
+    Attributes:
+        nap_time_sec: Nap duration in seconds (equals end - start)
+        nap_start_timestamp_gmt: ISO string in GMT, e.g. "2026-01-15T13:05:00"
+        nap_end_timestamp_gmt: ISO string in GMT
+        nap_start_time_offset: Local UTC offset in seconds at nap start
+        nap_end_time_offset: Local UTC offset in seconds at nap end
+        nap_feedback: Garmin feedback enum, e.g. IDEAL_TIMING_IDEAL_DURATION_LOW_NEED
+        nap_source: Source code (0 observed for device-detected naps)
+        device_id: Recording device id
+        calendar_date: Sleep-service day the nap was reported under
+        user_profile_pk: Garmin user profile key
+    """
+
+    nap_time_sec: int = 0
+    nap_start_timestamp_gmt: str = ""
+    nap_end_timestamp_gmt: str = ""
+    nap_start_time_offset: int = 0
+    nap_end_time_offset: int = 0
+    nap_feedback: Optional[str] = None
+    nap_source: Optional[int] = None
+    device_id: Optional[int] = None
+    calendar_date: str = ""
+    user_profile_pk: int = 0
+
+    @property
+    def nap_start_datetime_gmt(self) -> Optional[datetime]:
+        """Nap start as a naive GMT datetime (None if unparseable)."""
+        return self.iso_to_datetime(self.nap_start_timestamp_gmt)
+
+    @property
+    def nap_end_datetime_gmt(self) -> Optional[datetime]:
+        """Nap end as a naive GMT datetime (None if unparseable)."""
+        return self.iso_to_datetime(self.nap_end_timestamp_gmt)
+
+    @property
+    def nap_start_datetime_local(self) -> Optional[datetime]:
+        """Nap start in the device's local time (GMT + offset)."""
+        start = self.nap_start_datetime_gmt
+        if start is None:
+            return None
+        return start + timedelta(seconds=self.nap_start_time_offset or 0)
+
+    @property
+    def nap_end_datetime_local(self) -> Optional[datetime]:
+        """Nap end in the device's local time (GMT + offset)."""
+        end = self.nap_end_datetime_gmt
+        if end is None:
+            return None
+        return end + timedelta(seconds=self.nap_end_time_offset or 0)
+
+    @property
+    def nap_duration_minutes(self) -> float:
+        """Nap duration in minutes."""
+        return (self.nap_time_sec or 0) / 60
+
+
+@dataclass
 class Sleep:
     """Comprehensive sleep data from Garmin Connect API.
 
@@ -155,6 +229,9 @@ class Sleep:
         skin_temp_data_exists: Whether skin temperature data is available
         skin_temp_deviation_c: Skin temperature deviation in Celsius
         skin_temp_deviation_f: Skin temperature deviation in Fahrenheit
+        naps: Individual naps for the day (list of SleepNap); empty on nap-free
+            days. Nap time is excluded from sleep_duration_hours — see
+            nap_duration_hours and total_sleep_with_naps_hours.
 
     Example:
         >>> sleep = garmy.sleep.get()
@@ -181,6 +258,9 @@ class Sleep:
     skin_temp_deviation_c: Optional[float] = None
     skin_temp_deviation_f: Optional[float] = None
 
+    # Typed naps built from sleep_summary.daily_nap_dtos (empty on nap-free days)
+    naps: List[SleepNap] = field(default_factory=list)
+
     def __str__(self) -> str:
         """Format sleep data for human-readable display."""
         lines = []
@@ -202,6 +282,10 @@ class Sleep:
             )
         if self.sleep_summary.awake_count:
             lines.append(f"• Awakenings: {self.sleep_summary.awake_count}")
+        if self.nap_count or self.nap_duration_hours:
+            lines.append(
+                f"• Naps: {self.nap_count} ({self.nap_duration_hours * 60:.0f} min)"
+            )
 
         # Add data availability info
         data_counts = []
@@ -275,6 +359,24 @@ class Sleep:
         """Get number of movement readings."""
         return len(self.sleep_movement)
 
+    @property
+    def nap_count(self) -> int:
+        """Get number of naps reported for the day."""
+        return len(self.naps)
+
+    @property
+    def nap_duration_hours(self) -> float:
+        """Get total nap time in hours (excluded from sleep_duration_hours)."""
+        return (self.sleep_summary.nap_time_seconds or 0) / 3600
+
+    @property
+    def total_sleep_with_naps_hours(self) -> Optional[float]:
+        """Get main sleep plus naps in hours."""
+        main = self.sleep_duration_hours
+        if main is None:
+            return None
+        return main + self.nap_duration_hours
+
 
 def parse_sleep_data(data: Dict[str, Any]) -> Sleep:
     """Parse sleep data including top-level skin temperature fields.
@@ -302,6 +404,18 @@ def parse_sleep_data(data: Dict[str, Any]) -> Sleep:
     sleep.skin_temp_data_exists = data.get("skinTempDataExists", False)
     sleep.skin_temp_deviation_c = data.get("avgSkinTempDeviationC")
     sleep.skin_temp_deviation_f = data.get("avgSkinTempDeviationF")
+
+    # Build typed naps from the raw (snake_cased) dailyNapDTOS entries, keeping
+    # only declared SleepNap fields so extra or future API keys are ignored.
+    raw_naps = getattr(sleep.sleep_summary, "daily_nap_dtos", None)
+    if not isinstance(raw_naps, list):
+        raw_naps = []
+    nap_fields = set(SleepNap.__dataclass_fields__)
+    sleep.naps = [
+        SleepNap(**{k: v for k, v in nap.items() if k in nap_fields})
+        for nap in raw_naps
+        if isinstance(nap, dict)
+    ]
 
     return sleep
 

@@ -245,6 +245,12 @@ class DailyHealthMetric(Base):
     sleep_wake_time = Column(String)  # ISO timestamp string
     sleep_need_minutes = Column(Integer)  # Target sleep in minutes
 
+    # Naps (from dailySleepDTO.napTimeSeconds / dailyNapDTOS).
+    # sleep_duration_hours EXCLUDES naps; hours keep the two additive.
+    # 0 / 0.0 = synced day without naps; NULL = not synced since nap support.
+    nap_duration_hours = Column(Float)
+    nap_count = Column(Integer)
+
     # Skin temperature (Celsius only - Fahrenheit computed on read)
     skin_temp_deviation_c = Column(Float)
 
@@ -387,3 +393,36 @@ class HealthSnapshotZoneTime(Base):
 
     millis_in_zone = Column(Integer)
     zone_low_boundary = Column(Integer)
+
+
+class SleepNapRecord(Base):
+    """Individual nap reported by the sleep service (dailySleepDTO.dailyNapDTOS).
+
+    One row per nap, keyed by (user_id, nap_start_timestamp_gmt): naps carry no
+    id in the API, so the GMT start time is the natural key. calendar_date is
+    the sleep-service day the nap was reported under and joins to
+    daily_health_metrics.metric_date. Rows for a day are replaced on re-sync.
+
+    *_local timestamps already have the API's second-based UTC offset applied.
+    nap_feedback is a Garmin enum such as IDEAL_TIMING_IDEAL_DURATION_LOW_NEED or
+    MULTIPLE_NAPS_DURING_DAY. nap_source semantics are undocumented (0 observed
+    for device-detected naps).
+    """
+
+    __tablename__ = "sleep_naps"
+
+    user_id = Column(Integer, primary_key=True, nullable=False)
+    nap_start_timestamp_gmt = Column(DateTime, primary_key=True, nullable=False)
+    calendar_date = Column(Date, nullable=False, index=True)
+
+    nap_end_timestamp_gmt = Column(DateTime)
+    nap_start_timestamp_local = Column(DateTime)
+    nap_end_timestamp_local = Column(DateTime)
+
+    nap_time_seconds = Column(Integer)
+    nap_feedback = Column(String)
+    nap_source = Column(Integer)
+    device_id = Column(Integer)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
